@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import spotpy
 import tqdm
 
-from database import MultiDimDb, MemDb
+from calmd.database import MultiDimDb, MemDb
 
 
 # TODO - This needs lots of improvements to generalize to iterative database writing (like for zarr)
@@ -84,6 +84,12 @@ def LHS_md(params: list[spotpy.parameter.Base], repetitions: int, dbase: MultiDi
     database.save(param_dict=paramdict)
 
     if database.format == 'memory':
+        if paramdict != database.parameter_samples:
+            raise ValueError("The sampled parameter dictionary does not match the database parameter records...")
+        else:
+            paramdict = copy.deepcopy(database.parameter_samples)
+        return paramdict, database
+    elif database.format == 'zarr':
         if paramdict != database.parameter_samples:
             raise ValueError("The sampled parameter dictionary does not match the database parameter records...")
         else:

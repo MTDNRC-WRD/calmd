@@ -1,20 +1,14 @@
 """
 
 """
-from typing import Union, Optional
+from typing import Union
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import axes
-import xarray as xr
 import spotpy
 import tqdm
-import pandas as pd
-from scipy.interpolate import interp1d
-from scipy.stats import wasserstein_distance
 
-from database import MultiDimDb
-from _setupbase import MscuaSetup
+from calmd.database import MultiDimDb
+from calmd._setupbase import MscuaSetup
 
 
 def build_parameter_list(setup: MscuaSetup, parameter_dim: int, parameter_dim_name: str):
@@ -86,8 +80,7 @@ def query_parameters(params: Union[dict, MultiDimDb], rep_id: int):
 def run_multidim_model_reps(setup: MscuaSetup, dbase: MultiDimDb):
     if dbase.format == 'memory':
         if not dbase.parameter_samples:
-            raise AttributeError("No paramter samples have been saved to the input database.")
-
+            raise AttributeError("No parameter samples have been saved to the input database.")
         itst = list(dbase.parameter_samples.keys())[0]
         reps = dbase.parameter_samples[itst].shape[0]
         print(f"Running model for {reps} repititions in database...")
@@ -95,3 +88,15 @@ def run_multidim_model_reps(setup: MscuaSetup, dbase: MultiDimDb):
             qps = query_parameters(dbase.parameter_samples, i)
             mod = setup.simulation(qps)
             dbase.save(simulations=mod)
+    elif dbase.format == 'zarr': # itst and reps could probably be moved before if elif
+        if not dbase.parameter_samples:
+            raise AttributeError("No parameter samples have been saved to the input database.")
+        itst = list(dbase.parameter_samples.keys())[0]
+        reps = dbase.parameter_samples[itst].shape[0]
+        print(f"Running model for {reps} repetitions in database...")
+        for i in tqdm.tqdm(np.arange(reps) + 1, desc='simulation', leave=False):
+            qps = query_parameters(dbase.parameter_samples, i)
+            mod = setup.simulation(qps)
+            dbase.save(simulations=mod, rep_ind=i-1)
+    else:
+        raise AttributeError("The database format is not supported.")
