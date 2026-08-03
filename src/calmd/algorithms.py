@@ -366,7 +366,8 @@ class SensitivityAnalysis:
         pnames = []
         objf_names = None
         init_samp = {}
-        for p in plist:
+        init_samp_arr = np.zeros((len(plist), self.setup.parameter_dimension))
+        for i, p in enumerate(plist):
             name = p.name
             pnames.append(name)
             if defaults is None:
@@ -397,6 +398,7 @@ class SensitivityAnalysis:
                 else:
                     raise ValueError(f"Defaults provided for {name} parameter weren't recognized as an array or float.")
             init_samp.update({name: sv})
+            init_samp_arr[i] = sv
         rslt = xr.Dataset()
         rslt.coords['parameters'] = (('parameters',), pnames)
         rslt.coords['repetitions'] = (('repetitions',), np.arange(reps) + 1)
@@ -404,6 +406,7 @@ class SensitivityAnalysis:
         arr_sz = (len(pnames), reps, self.setup.parameter_dimension)
         active_samp = copy.deepcopy(init_samp)
         segment = 1 / float(reps)
+        rslt['base_sample'] = (('parameters', self.setup.param_dim_names), init_samp_arr)
         rslt['samples'] = (
         ('parameters', 'repetitions', self.setup.param_dim_names), da.from_array(np.empty(arr_sz), chunks='auto'))
         for i, p in enumerate(plist):
@@ -558,7 +561,17 @@ class SensitivityAnalysis:
         plt.tight_layout()
         plt.show()
 
-    def plot_obj_func(self, obj_func: str, indx: int = 0):
+    def plot_obj_func(self, obj_func: str, indx: int = 0, defaults: bool = True):
+        """Plot the variation in an objective function's value across the range of 
+        the parameter space for each parameter in the model.
+        
+        Args:
+            obj_func: the name of the objective function to plot.
+            indx: the index along the parameter dimension for which to plot the 
+              objective function values.
+            defaults: If True, plot vertical line to indicate the value from which 
+              the sensitivity analysis is deviating. Default True.
+        """
         if self.results is None:
             raise AttributeError("The sensitivity analysis has not been run yet, the results are empty.")
 
@@ -575,6 +588,11 @@ class SensitivityAnalysis:
                     ax_i = axs[0]
                 ax_i.plot(self.results['samples'].sel(parameters=v).values[:, indx],
                           self.results[obj_func].sel(parameters=v).values[:, indx])
+                if defaults:
+                    ax_i.axvline(self.results['base_sample'].sel(parameters=v).values[indx],
+                                color='tab:gray', linestyle='dashed', label="initial value")
+                    if i == n - 1:
+                        ax_i.legend()
                 ax_i.set_xlabel(f"{v} Value")
                 ax_i.set_ylabel(obj_func)
             else:
@@ -584,6 +602,11 @@ class SensitivityAnalysis:
                     ax_i = axs[1]
                 ax_i.plot(self.results['samples'].sel(parameters=v).values[:, indx],
                           self.results[obj_func].sel(parameters=v).values[:, indx])
+                if defaults:
+                    ax_i.axvline(self.results['base_sample'].sel(parameters=v).values[indx],
+                                color='tab:gray', linestyle='dashed', label="initial value")
+                    if i == n - 1:
+                        ax_i.legend()
                 ax_i.set_xlabel(f"{v} Value")
                 ax_i.set_ylabel(obj_func)
         if n % 2 != 0:

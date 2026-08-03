@@ -13,3 +13,4 @@ This package will likely be used in the same environment as your model, and as s
 - [spotpy](https://spotpy.readthedocs.io/en/latest/)
 - tqdm
 - xarray
+- ipykernel (to run example notebooks)
