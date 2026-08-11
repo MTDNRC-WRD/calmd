@@ -8,14 +8,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import axes
 import xarray as xr
-import spotpy
-import tqdm
-import pandas as pd
-from scipy.interpolate import interp1d
 from scipy.stats import wasserstein_distance
 
-from database import MultiDimDb
-from _setupbase import MscuaSetup
+from calmd.database import MultiDimDb
 
 
 class MsCuaAnalyzer:
@@ -107,7 +102,7 @@ class MsCuaAnalyzer:
                 if self.ds["95PPU_lower"].values.shape != obs_data.shape:
                     raise ValueError(
                         "The input observation data does not match the size of the modeled 95 percent prediction uncertainty.")
-                ax.plot(obs_data[:, indx], markers=None, ls='-', lw=1.25, color='black', label='Observed Values')
+                ax.plot(obs_data[:, indx], marker=None, ls='-', lw=1.25, color='black', label='Observed Values')
             if best_sim:
                 for i in self.ds["objective_functions"].values:
                     ax.plot(self.ds[f"best_simulation_{i}"].values[:, indx], marker=None, ls='--', lw=1, color='red',
