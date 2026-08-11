@@ -47,7 +47,7 @@ class ZarrDb(MultiDimDb):
 
     @property
     def simulation_results(self):
-        return np.array(self._sim)
+        return self._sim
 
     @property
     def parameter_samples(self):
@@ -79,13 +79,15 @@ class ZarrDb(MultiDimDb):
                     for k, v in objective_func.items():
                         self._objfun[k] = np.vstack((self._objfun[k], v))
             if (self.parameter_samples is not None) & (simulations is not None) & (rep_ind is not None):
-                if self._sim is None:
-                    itst = list(self._par_samples.keys())[0]
-                    reps = self._par_samples[itst].shape[0]
-                    self._sim = zarr.open(self.cwd, mode='w', shape=((reps,) + simulations.shape),
-                                          chunks=((1,) + simulations.shape))
+                if self._sim is not None:
                     self._sim[rep_ind, :, :] = simulations
                 else:
+                    itst = list(self._par_samples.keys())[0]
+                    reps = self._par_samples[itst].shape[0]
+                    # self._sim = zarr.open(self.cwd, mode='w', shape=((reps,) + simulations.shape),
+                    #                       chunks=((1,) + simulations.shape), dtype=np.float32)
+                    self._sim = zarr.open(self.cwd, mode='w', shape=((reps,) + simulations.shape),
+                                          chunks=(1,) + (simulations.shape[0], 1), dtype=np.float32)
                     self._sim[rep_ind, :, :] = simulations
 
     def to_xarray(self):
@@ -262,7 +264,7 @@ class MemDb(MultiDimDb):
                 if self.best_sim is not None:
                     ds[f"best_simulation_{obf}"] = (
                     ("observation", self.dim_names[list(self.dim_names.keys())[0]]), self.best_sim[obf],
-                    {"description": f"the simulation repitition with the best {obf} value"})
+                    {"description": f"the simulation repetition with the best {obf} value"})
 
             if self.best_objfun is not None:
                 bst_obfn = []

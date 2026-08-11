@@ -2,16 +2,21 @@ from typing import Union, Optional
 import copy
 from pathlib import Path
 import inspect
+import warnings
+import shutil
 
+import tqdm
 import numpy as np
 import xarray as xr
 import dask.array as da
+from dask.diagnostics import ProgressBar
+import zarr
+from rechunker import rechunk
 import matplotlib.pyplot as plt
-import tqdm
 
 from calmd.database import MultiDimDb, MemDb, ZarrDb
 from calmd.sample import LHS_md
-from calmd.obj_funcs import obj_func_direction
+from calmd.obj_funcs import obj_func_direction, jit_nse_md
 from calmd.utils import build_parameter_list, run_multidim_model_reps
 from calmd._setupbase import MscuaSetup
 from calmd.io_warning import user_warning
@@ -40,6 +45,8 @@ class MsCua:
         else:
             raise NotImplementedError("Other databases not supported yet, choose 'memory'")
 
+        if np.isnan(self.setup.observation_data).all(axis=0).any():
+            warnings.warn("At least one column in self.setup.observation_data is missing all values.")
         self.observation_data = self.setup.evaluation()
 
     def evaluate_iteration(self, dbase: MultiDimDb, objfunc_thresh: dict, min_pfactor: float = 0.35,
@@ -159,22 +166,38 @@ class MsCua:
                 raise AttributeError("No parameter samples have been saved to the input database.")
             if dbase.simulation_results is None:
                 raise AttributeError("No simulation data has been saved to the input database.")
-
             dbase.thresholds = objfunc_thresh
             dbase.thresholds.update({"pfactor_threshold": min_pfactor})
             dbase.thresholds.update({"min_refined_params_threshold": min_refparams})
             dbase._ref_par = copy.deepcopy(dbase._par_samples)
+            # print(f"Rechunking {str(dbase.cwd)}...")
+            # rechunk_path = dbase.cwd[:dbase.cwd.find('.zarr')] + '_rechunk.zarr'
+            # intermediate_path = dbase.cwd[:dbase.cwd.find('.zarr')] + '_intermediate.zarr'
+            # for f in Path(dbase.cwd).parent.iterdir():
+            #     if f in [Path(rechunk_path), Path(intermediate_path)]:
+            #         shutil.rmtree(Path(f))
+            # source_byte = np.prod(dbase.simulation_results.chunks) * dbase.simulation_results.dtype.itemsize
+            # target_byte = np.prod(dbase.simulation_results.shape[:2]) * dbase.simulation_results.dtype.itemsize
+            # rechunk_results = rechunk(dbase.simulation_results,
+            #                           target_chunks=(dbase.simulation_results.shape[:2] + (1,)),
+            #                           target_store=dbase.cwd[:dbase.cwd.find('.zarr')] + '_rechunk.zarr',
+            #                           max_mem=np.max([source_byte, target_byte]) * 1.05,
+            #                           temp_store=intermediate_path)
+            # with ProgressBar():
+            #     rechunk_results.execute()
+            # rechunk_results = zarr.open(Path(dbase.cwd[:dbase.cwd.find('.zarr')] + '_rechunk.zarr'))
             keys = list(dbase.dims.keys())[0]
-            feats = dbase.dims[keys]
-            if isinstance(feats, int):
+            features = dbase.dims[keys]
+            if isinstance(features, int):
                 print("Evaluating Objective Function Values...")
-                feat_list = []
-                for i in tqdm.tqdm(range(feats), desc='features', leave=False):
-                    feat_arr = dbase.simulation_results[:, :, i][:, :, np.newaxis]
-                    obs_arr = self.observation_data[:, 0][np.newaxis, :, np.newaxis]
-                    feat_ob = self.setup.objectivefunction(obs_arr, feat_arr)
-                    feat_list.append(feat_ob)
-                ob = {k: np.concatenate([f[k] for f in feat_list], axis=1) for k in feat_list[0]}
+                feature_list = []
+                for i in tqdm.tqdm(range(features), desc='features', leave=False):
+                    # feature_arr = rechunk_results[:, :, i:i + 1]
+                    feature_arr = dbase.simulation_results[:, :, i:i + 1]
+                    observation_arr = np.expand_dims(self.observation_data[:, i], axis=(0, 2))
+                    feature_objfunc = self.setup.objectivefunction(observation_arr, feature_arr)
+                    feature_list.append(feature_objfunc)
+                ob = {k: np.concatenate([f[k] for f in feature_list], axis=1) for k in feature_list[0]}
             else:
                 raise IndexError("self.parameter_dimension must use int data type.")
             if not isinstance(ob, dict):
@@ -188,11 +211,14 @@ class MsCua:
                 if obj_func_direction[k] == 'minimize':
                     br_list = []
                     bo_list = []
-                    for i in range(feats):
-                        feat_arr = dbase.simulation_results[:, :, i][:, :, np.newaxis]
-                        obs_arr = v[:, i][:, np.newaxis]
-                        br_list.append(feat_arr[obs_arr.argmin(axis=0), :, np.arange(obs_arr.shape[1])].T)
-                        bo_list.append(obs_arr[obs_arr.argmin(axis=0), np.arange(obs_arr.shape[1])])
+                    for i in range(features):
+                        # feature_arr = rechunk_results[:, :, i:i + 1]
+                        feature_arr = dbase.simulation_results[:, :, i:i + 1]
+                        observation_arr = v[:, i:i + 1]
+                        br_list.append(
+                            feature_arr[observation_arr.argmin(axis=0), :, np.arange(observation_arr.shape[1])].T)
+                        bo_list.append(
+                            observation_arr[observation_arr.argmin(axis=0), np.arange(observation_arr.shape[1])])
                     best_rep = np.concatenate(br_list, axis=1)
                     best_ob = np.concatenate(bo_list, axis=0)
                     best_par = {}
@@ -201,11 +227,14 @@ class MsCua:
                 elif obj_func_direction[k] == 'maximize':
                     br_list = []
                     bo_list = []
-                    for i in range(feats):
-                        feat_arr = dbase.simulation_results[:, :, i][:, :, np.newaxis]
-                        obs_arr = v[:, i][:, np.newaxis]
-                        br_list.append(feat_arr[obs_arr.argmax(axis=0), :, np.arange(obs_arr.shape[1])].T)
-                        bo_list.append(obs_arr[obs_arr.argmax(axis=0), np.arange(obs_arr.shape[1])])
+                    for i in range(features):
+                        # feature_arr = rechunk_results[:, :, i:i + 1]
+                        feature_arr = dbase.simulation_results[:, :, i:i + 1]
+                        observation_arr = v[:, i:i + 1]
+                        br_list.append(
+                            feature_arr[observation_arr.argmax(axis=0), :, np.arange(observation_arr.shape[1])].T)
+                        bo_list.append(
+                            observation_arr[observation_arr.argmax(axis=0), np.arange(observation_arr.shape[1])])
                     best_rep = np.concatenate(br_list, axis=1)
                     best_ob = np.concatenate(bo_list, axis=0)
                     best_par = {}
@@ -224,12 +253,12 @@ class MsCua:
                 if k not in list(objfunc_thresh.keys()):
                     raise ValueError(f"No threshold was provided for objective function {k}.")
                 if obj_func_direction[k] == 'minimize':
-                    filter = np.where(v > objfunc_thresh[k])
+                    threshold_filter = np.where(v > objfunc_thresh[k])
                 elif obj_func_direction[k] == 'maximize':
-                    filter = np.where(v < objfunc_thresh[k])
+                    threshold_filter = np.where(v < objfunc_thresh[k])
                 else:
                     raise ValueError("The objective function threshold direction is not recognized.")
-                fil[k] = filter
+                fil[k] = threshold_filter
                 for park in dbase.refined_parameters.keys():
                     for k, v in fil.items():
                         dbase._ref_par[park][v] = np.nan
@@ -238,7 +267,6 @@ class MsCua:
             print(f"Max number of refined parameter sets: {refined_param_cnt.max()}")
             print(f"Min number of refined parameter sets: {refined_param_cnt.min()}")
             ref_less_than = np.count_nonzero(refined_param_cnt < min_refparams)
-
             ## calculate 95PPU, pfactor, and rfactor here
             print("Calculating the 95PPU...")
             obs_sd = np.nanstd(self.observation_data, axis=0)  # np.nanstd from np.std
@@ -246,19 +274,17 @@ class MsCua:
             loppu_list = []
             pfac_list = []
             rfac_list = []
-            for i in tqdm.tqdm(range(feats), desc='features', leave=False):
-                ref_sims_idx = np.where(param_nans[:, i])[0]
-                feat_arr = dbase.simulation_results[:, :, i][:, :, np.newaxis]
-                feat_arr[ref_sims_idx, :, :] = np.nan
-                up95ppu = np.nanquantile(feat_arr, 0.975, axis=0)[:, 0]
-                lo95ppu = np.nanquantile(feat_arr, 0.025, axis=0)[:, 0]
-                pfac_arr = np.where(
-                    (self.observation_data[:, i] <= up95ppu) & (self.observation_data[:, i] >= lo95ppu), 1, 0)
-                nan_ind = np.where(np.isnan(self.observation_data[:, i]))
-                pfac_arr = pfac_arr.astype(float)
-                pfac_arr[nan_ind] = np.nan
-                pfac_cnt = np.nansum(pfac_arr)
-                pfac = pfac_cnt / (~np.isnan(pfac_arr)).sum()
+            for i in tqdm.tqdm(range(features), desc='features', leave=False):
+                # feature_arr = rechunk_results[:, :, i:i + 1]
+                feature_arr = dbase.simulation_results[:, :, i:i + 1]
+                feature_arr[(np.where(param_nans[:, i])[0]), :, :] = np.nan
+                ppu95 = np.nanquantile(feature_arr, [0.025, 0.975], axis=0)
+                up95ppu = ppu95[1, :, 0]
+                lo95ppu = ppu95[0, :, 0]
+                pfac_arr = np.where((self.observation_data[:, i] <= up95ppu) & (self.observation_data[:, i] >= lo95ppu),
+                                    1, 0) * 1.0
+                pfac_arr[np.where(np.isnan(self.observation_data[:, i]))] = np.nan
+                pfac = np.nansum(pfac_arr) / (~np.isnan(pfac_arr)).sum()
                 ppu_diff = (up95ppu - lo95ppu).mean()
                 rfac = ppu_diff / obs_sd[i]
                 upppu_list.append(up95ppu)
