@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from numba import njit, prange
 
 obj_func_direction = {
     'mse': 'minimize',
@@ -11,6 +12,10 @@ obj_func_direction = {
 
 
 def mse_md(observation: np.ndarray, simulation: np.ndarray, return_dict: bool = False, axis=0):
+    if not observation.flags.C_CONTIGUOUS:
+        print('observation must be C_CONTIGUOUS')
+    if not simulation.flags.C_CONTIGUOUS:
+        print('observation must be C_CONTIGUOUS')
     if observation.shape[axis] == simulation.shape[axis]:
         mse = np.nanmean((observation - simulation) ** 2, axis=axis)
         if return_dict:
@@ -69,3 +74,23 @@ def pbias_md(observation: np.ndarray, simulation: np.ndarray, return_dict: bool 
             return pbias
     else:
         raise ValueError("evaluation and simulation data do not have the same length.")
+
+
+# @njit()
+# def jit_nse_md(observation: np.ndarray, simulation: np.ndarray, return_dict: bool = True, axis=1):
+#     if observation.shape[axis] == simulation[0, :, :].shape[axis]:
+#         nse = np.zeros((simulation.shape[0], simulation.shape[2]))
+#         for i in prange(observation.shape[1]):
+#             observation_arr = observation[:, i]
+#             simulation_arr = simulation[:, :, i]
+#             mean_observed = np.nanmean(observation_arr)
+#             numerator = np.nan_to_num((observation_arr[None, :] - simulation_arr)**2.0).sum(axis=1)[:, None]
+#             denominator = np.nan_to_num((observation_arr[None, :] - mean_observed)**2.0).sum(axis=1)[:, None]
+#             feature_nse = 1.0 - (numerator/denominator)
+#             nse[:, i] = feature_nse[:, 0]
+#         if return_dict:
+#             return {'nse':nse}
+#         else:
+#             raise ValueError("values must be returned as dictionary for jit functions.")
+#     else:
+#         raise ValueError("evaluation and simulation data do not have the same length.")
