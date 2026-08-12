@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 
 from calmd.database import MultiDimDb, MemDb, ZarrDb
 from calmd.sample import LHS_md
-from calmd.obj_funcs import obj_func_direction, jit_nse_md
+from calmd.obj_funcs import obj_func_direction
 from calmd.utils import build_parameter_list, run_multidim_model_reps
 from calmd._setupbase import MscuaSetup
 from calmd.io_warning import user_warning
@@ -274,23 +274,25 @@ class MsCua:
             loppu_list = []
             pfac_list = []
             rfac_list = []
-            for i in tqdm.tqdm(range(features), desc='features', leave=False):
-                # feature_arr = rechunk_results[:, :, i:i + 1]
-                feature_arr = dbase.simulation_results[:, :, i:i + 1]
-                feature_arr[(np.where(param_nans[:, i])[0]), :, :] = np.nan
-                ppu95 = np.nanquantile(feature_arr, [0.025, 0.975], axis=0)
-                up95ppu = ppu95[1, :, 0]
-                lo95ppu = ppu95[0, :, 0]
-                pfac_arr = np.where((self.observation_data[:, i] <= up95ppu) & (self.observation_data[:, i] >= lo95ppu),
-                                    1, 0) * 1.0
-                pfac_arr[np.where(np.isnan(self.observation_data[:, i]))] = np.nan
-                pfac = np.nansum(pfac_arr) / (~np.isnan(pfac_arr)).sum()
-                ppu_diff = (up95ppu - lo95ppu).mean()
-                rfac = ppu_diff / obs_sd[i]
-                upppu_list.append(up95ppu)
-                loppu_list.append(lo95ppu)
-                pfac_list.append(pfac)
-                rfac_list.append(rfac)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', category=RuntimeWarning)
+                for i in tqdm.tqdm(range(features), desc='features', leave=False):
+                    # feature_arr = rechunk_results[:, :, i:i + 1]
+                    feature_arr = dbase.simulation_results[:, :, i:i + 1]
+                    feature_arr[(np.where(param_nans[:, i])[0]), :, :] = np.nan
+                    ppu95 = np.nanquantile(feature_arr, [0.025, 0.975], axis=0)
+                    up95ppu = ppu95[1, :, 0]
+                    lo95ppu = ppu95[0, :, 0]
+                    pfac_arr = np.where((self.observation_data[:, i] <= up95ppu) & (self.observation_data[:, i] >= lo95ppu),
+                                        1, 0) * 1.0
+                    pfac_arr[np.where(np.isnan(self.observation_data[:, i]))] = np.nan
+                    pfac = np.nansum(pfac_arr) / (~np.isnan(pfac_arr)).sum()
+                    ppu_diff = (up95ppu - lo95ppu).mean()
+                    rfac = ppu_diff / obs_sd[i]
+                    upppu_list.append(up95ppu)
+                    loppu_list.append(lo95ppu)
+                    pfac_list.append(pfac)
+                    rfac_list.append(rfac)
             dbase.ppu_upper = np.stack(upppu_list, axis=1)
             dbase.ppu_lower = np.stack(loppu_list, axis=1)
             dbase.pfactor = np.array(pfac_list)
