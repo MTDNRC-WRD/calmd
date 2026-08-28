@@ -170,29 +170,12 @@ class MsCua:
             dbase.thresholds.update({"pfactor_threshold": min_pfactor})
             dbase.thresholds.update({"min_refined_params_threshold": min_refparams})
             dbase._ref_par = copy.deepcopy(dbase._par_samples)
-            # print(f"Rechunking {str(dbase.cwd)}...")
-            # rechunk_path = dbase.cwd[:dbase.cwd.find('.zarr')] + '_rechunk.zarr'
-            # intermediate_path = dbase.cwd[:dbase.cwd.find('.zarr')] + '_intermediate.zarr'
-            # for f in Path(dbase.cwd).parent.iterdir():
-            #     if f in [Path(rechunk_path), Path(intermediate_path)]:
-            #         shutil.rmtree(Path(f))
-            # source_byte = np.prod(dbase.simulation_results.chunks) * dbase.simulation_results.dtype.itemsize
-            # target_byte = np.prod(dbase.simulation_results.shape[:2]) * dbase.simulation_results.dtype.itemsize
-            # rechunk_results = rechunk(dbase.simulation_results,
-            #                           target_chunks=(dbase.simulation_results.shape[:2] + (1,)),
-            #                           target_store=dbase.cwd[:dbase.cwd.find('.zarr')] + '_rechunk.zarr',
-            #                           max_mem=np.max([source_byte, target_byte]) * 1.05,
-            #                           temp_store=intermediate_path)
-            # with ProgressBar():
-            #     rechunk_results.execute()
-            # rechunk_results = zarr.open(Path(dbase.cwd[:dbase.cwd.find('.zarr')] + '_rechunk.zarr'))
             keys = list(dbase.dims.keys())[0]
             features = dbase.dims[keys]
             if isinstance(features, int):
                 print("Evaluating Objective Function Values...")
                 feature_list = []
                 for i in tqdm.tqdm(range(features), desc='features', leave=False):
-                    # feature_arr = rechunk_results[:, :, i:i + 1]
                     feature_arr = dbase.simulation_results[:, :, i:i + 1]
                     observation_arr = np.expand_dims(self.observation_data[:, i], axis=(0, 2))
                     feature_objfunc = self.setup.objectivefunction(observation_arr, feature_arr)
@@ -212,7 +195,6 @@ class MsCua:
                     br_list = []
                     bo_list = []
                     for i in range(features):
-                        # feature_arr = rechunk_results[:, :, i:i + 1]
                         feature_arr = dbase.simulation_results[:, :, i:i + 1]
                         observation_arr = v[:, i:i + 1]
                         br_list.append(
@@ -228,7 +210,6 @@ class MsCua:
                     br_list = []
                     bo_list = []
                     for i in range(features):
-                        # feature_arr = rechunk_results[:, :, i:i + 1]
                         feature_arr = dbase.simulation_results[:, :, i:i + 1]
                         observation_arr = v[:, i:i + 1]
                         br_list.append(

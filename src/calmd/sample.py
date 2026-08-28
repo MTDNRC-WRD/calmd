@@ -18,7 +18,6 @@ def LHS_md(params: list[spotpy.parameter.Base], repetitions: int, dbase: MultiDi
         repetitions:
         dbase_name:
         dbase_format:
-
     """
     database = copy.deepcopy(dbase)
     param_dims = {}
@@ -42,7 +41,7 @@ def LHS_md(params: list[spotpy.parameter.Base], repetitions: int, dbase: MultiDi
             if p.rndfunctype == 'List':
                 val_arr = p.values
                 if len(val_arr.shape) != 2:
-                    raise ValueError("For multidimensional LHS, a 2D paramter array is required for 'List' type.")
+                    raise ValueError("For multidimensional LHS, a 2D parameter array is required for 'List' type.")
             else:
                 vals = np.linspace(p.minbound, p.maxbound, repetitions)
                 val_arr = np.repeat(vals[:, None], p.dim, axis=1)
@@ -75,14 +74,11 @@ def LHS_md(params: list[spotpy.parameter.Base], repetitions: int, dbase: MultiDi
                 parset = pointInSegment * (parmax - parmin) + parmin
                 matrix[i, :] = parset
             paramdict.update({p.name: matrix})
-
     # "Shuffle" or randomize the parameter sets (or combinations)
     for k, v in paramdict.items():
         np.random.shuffle(v)
         paramdict[k] = v
-
     database.save(param_dict=paramdict)
-
     if database.format == 'memory':
         if paramdict != database.parameter_samples:
             raise ValueError("The sampled parameter dictionary does not match the database parameter records...")
