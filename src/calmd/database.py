@@ -9,7 +9,7 @@ class MultiDimDb:
     def __init__(
             self,
             dbname: str,
-            dbpath: Union[str, Path],
+            dbpath: Optional[Union[str, Path]] = None,
             dims: Optional[dict] = None,
             dim_names: Optional[dict] = None,
             dbappend: bool = False,
@@ -241,6 +241,7 @@ class MemDb(MultiDimDb):
                 self._sim.append(simulations)
 
     def to_xarray(self):
+        """To be used if there is a single calibration time series."""
         ds = xr.Dataset()
         param_names = []
         for k in list(self._par_samples.keys()):
@@ -259,12 +260,12 @@ class MemDb(MultiDimDb):
         if self.objective_func_values is not None:
             for obf in objfunc_names:
                 ds[obf] = (
-                ("repetition", self.dim_names[list(self.dim_names.keys())[0]]), self.objective_func_values[obf],
-                {"description": "objective function"})
+                    ("repetition", self.dim_names[list(self.dim_names.keys())[0]]), self.objective_func_values[obf],
+                    {"description": "objective function"})
                 if self.best_sim is not None:
                     ds[f"best_simulation_{obf}"] = (
-                    ("observation", self.dim_names[list(self.dim_names.keys())[0]]), self.best_sim[obf],
-                    {"description": f"the simulation repetition with the best {obf} value"})
+                        ("observation", self.dim_names[list(self.dim_names.keys())[0]]), self.best_sim[obf],
+                        {"description": f"the simulation repitition with the best {obf} value"})
 
             if self.best_objfun is not None:
                 bst_obfn = []
@@ -278,15 +279,15 @@ class MemDb(MultiDimDb):
                         bst_p_arr = np.array(bst_p_mid)
                         bst_params.append(bst_p_arr)
                 ds["best_obj_function"] = (
-                ("objective_functions", self.dim_names[list(self.dim_names.keys())[0]]), np.array(bst_obfn))
+                    ("objective_functions", self.dim_names[list(self.dim_names.keys())[0]]), np.array(bst_obfn))
                 if self.best_params is not None:
                     ds["best_parameter_set"] = (
-                    ("objective_functions", "parameters", self.dim_names[list(self.dim_names.keys())[0]]),
-                    np.array(bst_params))
+                        ("objective_functions", "parameters", self.dim_names[list(self.dim_names.keys())[0]]),
+                        np.array(bst_params))
 
         if len(self.simulation_results) != 0:
             ds["simulation_results"] = (
-            ("repetition", "observation", self.dim_names[list(self.dim_names.keys())[0]]), np.array(self._sim))
+                ("repetition", "observation", self.dim_names[list(self.dim_names.keys())[0]]), np.array(self._sim))
         if self.pfactor is not None:
             ds["pfactor"] = ((self.dim_names[list(self.dim_names.keys())[0]]), self.pfactor)
         if self.rfactor is not None:
@@ -297,7 +298,7 @@ class MemDb(MultiDimDb):
             ds["95PPU_upper"] = (("observation", self.dim_names[list(self.dim_names.keys())[0]]), self.ppu_upper)
 
         coord_dict = {}
-        for k, v in ds.dims.items():
+        for k, v in ds.sizes.items():
             if k == 'objective_functions':
                 coord_dict[k] = (k, objfunc_names)
             elif k == 'parameters':
@@ -320,5 +321,124 @@ class MemDb(MultiDimDb):
                         obfthrs[obidx] = v
             if not np.isinf(obfthrs).all():
                 ds['obj_func_thresholds'] = (('objective_functions',), obfthrs)
+
+        return ds
+
+    def to_xarray_dict(self):
+        """To be used with multiple calibration time series."""
+        ds = xr.Dataset()
+        param_names = []
+        for k in list(self._par_samples.keys()):
+            param_names.append(k)
+
+        # dict like {obs_time_series_1: [obj_func_name_1], obs_time_series_2: [obj_func_name_1, obj_func_name_2, ...], ...}
+        objfunc_names = {}
+        for k, v in self.objective_func_values.items():
+            objfunc_names[k] = list(v.keys())
+
+        # list like [obj_func_name_1, obj_func_name_2, ...]
+        objfunc_names_flat = list({obj for objs in self.objective_func_values.values() for obj in objs.keys()})
+
+        if self.parameter_samples is not None:
+            for pnm in param_names:
+                ds[f"{pnm}_samples"] = (("repetition", self.dim_names[pnm]), self.parameter_samples[pnm],
+                                        {"description": "original parameter sample"})
+        if self.refined_parameters is not None:
+            for pnm in param_names:
+                ds[f"{pnm}_refined"] = (("repetition", self.dim_names[pnm]), self.refined_parameters[pnm],
+                                        {"description": "refined parameter set"})
+
+        for ts, obfs in objfunc_names.items():
+            if self.objective_func_values is not None:
+                for obf in obfs:
+                    ts_ob = f"{obf}_{ts}"
+                    ds[ts_ob] = (
+                        ("repetition", self.dim_names[list(self.dim_names.keys())[0]]),
+                        self.objective_func_values[ts][obf],
+                        {"description": "objective function"})
+                    if self.best_sim is not None:
+                        ds[f"best_simulation_{ts_ob}"] = (
+                            (f"observation_{ts}", self.dim_names[list(self.dim_names.keys())[0]]),
+                            self.best_sim[ts][obf],
+                            {"description": f"the simulation repetition with the best {obf} value"})
+                ts_len = len(self.objective_func_values[ts][obf][0])
+
+                if self.best_objfun is not None:
+                    bst_obfn = []
+                    bst_params = []
+                    for obf in objfunc_names_flat:
+                        if obf in obfs:
+                            bst_obfn.append(self.best_objfun[ts][obf])
+                            bst_p_mid = []
+                            if self.best_params is not None:
+                                for pnm in param_names:
+                                    bst_p_mid.append(self.best_params[ts][obf][pnm])
+                                bst_p_arr = np.array(bst_p_mid)
+                                bst_params.append(bst_p_arr)
+                        else:
+                            bst_obfn.append(np.full(ts_len, np.nan))
+                            if self.best_params is not None:
+                                bst_params.append(np.full((len(param_names), ts_len), np.nan))
+                    # print(self.dim_names[list(self.dim_names.keys())[0]])  # "field"
+                    ds[f"best_obj_function_{ts}"] = (
+                        ("objective_functions", self.dim_names[list(self.dim_names.keys())[0]]), np.array(bst_obfn))
+                    if self.best_params is not None:
+                        ds[f"best_parameter_set_{ts}"] = (
+                            ("objective_functions", "parameters", self.dim_names[list(self.dim_names.keys())[0]]),
+                            np.array(bst_params))
+
+        if len(self.simulation_results) != 0:
+
+            # reshape the dictionaries.
+            sims_list = self.simulation_results
+            sims_dict = {}
+            for ts in sims_list[0].keys():
+                sims_dict[ts] = np.zeros((len(sims_list), len(sims_list[0][ts]), len(sims_list[0][ts][0])))
+            for i in range(len(sims_list)):
+                for ts, sim_vals in sims_list[i].items():
+                    sims_dict[ts][i] = sim_vals
+
+            for ts in objfunc_names.keys():
+                ds[f"simulation_results_{ts}"] = (
+                    ("repetition", f"observation_{ts}", self.dim_names[list(self.dim_names.keys())[0]]),
+                    np.array(sims_dict[ts]))
+
+        for ts in objfunc_names.keys():
+            if self.pfactor is not None:
+                ds[f"pfactor_{ts}"] = ((self.dim_names[list(self.dim_names.keys())[0]]), self.pfactor[ts])
+            if self.rfactor is not None:
+                ds[f"rfactor_{ts}"] = ((self.dim_names[list(self.dim_names.keys())[0]]), self.rfactor[ts])
+            if self.ppu_lower is not None:
+                ds[f"95PPU_lower_{ts}"] = ((f"observation_{ts}", self.dim_names[list(self.dim_names.keys())[0]]),
+                                           self.ppu_lower[ts])
+            if self.ppu_upper is not None:
+                ds[f"95PPU_upper_{ts}"] = ((f"observation_{ts}", self.dim_names[list(self.dim_names.keys())[0]]),
+                                           self.ppu_upper[ts])
+
+        coord_dict = {}
+        for k, v in ds.sizes.items():
+            if k == 'objective_functions':
+                coord_dict[k] = (k, objfunc_names_flat)
+            elif k == 'parameters':
+                coord_dict[k] = (k, param_names)
+            else:
+                coord_dict[k] = (k, np.arange(v) + 1)
+
+        ds = ds.assign_coords(coord_dict)
+
+        if self.thresholds is not None:
+            for k, v in self.thresholds.items():
+                if k == 'pfactor_threshold':
+                    ds[k] = (('scalar',), np.array([v]))
+                elif k == 'min_refined_params_threshold':
+                    ds[k] = (('scalar',), np.array([v]))
+                else:
+                    obfthrs = np.empty(len(objfunc_names_flat))
+                    for obj, val in v.items():
+                        if obj in objfunc_names_flat:
+                            obidx = objfunc_names_flat.index(obj)
+                            obfthrs[obidx] = val
+                    if not np.isinf(obfthrs).all():
+                        ds[f'obj_func_thresholds_{k}'] = (('objective_functions',), obfthrs)
 
         return ds
