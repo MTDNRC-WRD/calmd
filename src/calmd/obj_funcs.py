@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from numba import njit, prange
 
 obj_func_direction = {
     'mse': 'minimize',
@@ -11,6 +12,10 @@ obj_func_direction = {
 
 
 def mse_md(observation: np.ndarray, simulation: np.ndarray, return_dict: bool = False, axis=0):
+    if not observation.flags.C_CONTIGUOUS:
+        print('observation must be C_CONTIGUOUS')
+    if not simulation.flags.C_CONTIGUOUS:
+        print('observation must be C_CONTIGUOUS')
     if observation.shape[axis] == simulation.shape[axis]:
         mse = np.nanmean((observation - simulation) ** 2, axis=axis)
         if return_dict:

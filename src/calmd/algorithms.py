@@ -2,19 +2,24 @@ from typing import Union, Optional
 import copy
 from pathlib import Path
 import inspect
+import warnings
+import shutil
 
+import tqdm
 import numpy as np
 import xarray as xr
 import dask.array as da
+from dask.diagnostics import ProgressBar
+import zarr
+from rechunker import rechunk
 import matplotlib.pyplot as plt
-import tqdm
 
-from calmd.database import MultiDimDb, MemDb
+from calmd.database import MultiDimDb, MemDb, ZarrDb
 from calmd.sample import LHS_md
 from calmd.obj_funcs import obj_func_direction
 from calmd.utils import build_parameter_list, run_multidim_model_reps
 from calmd._setupbase import MscuaSetup
-from calmd.io import user_warning
+from calmd.io_warning import user_warning
 
 class MsCua:
     algorithm_name = "MSCUA"
@@ -25,14 +30,22 @@ class MsCua:
             dbname: str = 'mscuaDb',
             dbformat: str = 'memory',
             dbappend: bool = False,
+            dbpath: str = None,
             iter_db: Union[str, Path, None] = None
     ):
         self.setup = setup_class
         if dbformat == 'memory':
             self.database = MemDb(dbname=dbname)
+        elif dbformat == 'zarr':
+            if dbpath is None:
+                raise ValueError("The dbpath argument must be defined when using 'dbformat=zarr'.") # new code EMB
+            else: # new code EMB
+                self.database = ZarrDb(dbname=dbname, dbpath=dbpath)
         else:
             raise NotImplementedError("Other databases not supported yet, choose 'memory'")
 
+        if np.isnan(self.setup.observation_data).all(axis=0).any():
+            warnings.warn("At least one column in self.setup.observation_data is missing all values.")
         self.observation_data = self.setup.evaluation()
 
     def evaluate_iteration(self, dbase: MultiDimDb, objfunc_thresh: dict, min_pfactor: float = 0.35,
@@ -51,7 +64,6 @@ class MsCua:
             dbase.thresholds.update({"pfactor_threshold": min_pfactor})
             dbase.thresholds.update({"min_refined_params_threshold": min_refparams})
             dbase._ref_par = copy.deepcopy(dbase._par_samples)
-            reps = len(dbase.simulation_results)
             print("Evaluating Objective Function Values...")
             # need to convert simulation_results into an array here...sooner than it was
             sims_arr = np.array(dbase.simulation_results)
@@ -121,7 +133,6 @@ class MsCua:
             pfac_arr[nan_ind] = np.nan
             pfac_cnt = np.nansum(pfac_arr, axis=0)
             pfactor = pfac_cnt / (~np.isnan(pfac_arr)).sum(axis=0)
-
             ppu_diff = (up95ppu - lo95ppu).mean(axis=0)
             rfactor = ppu_diff / obs_sd
             print(f"Max p-factor = {pfactor.max()}")
@@ -134,7 +145,7 @@ class MsCua:
             dbase.rfactor = rfactor
 
             if ref_less_than == 0:
-                print(f"All models retained more refined parameter sets than the minimun: {min_refparams}.")
+                print(f"All models retained more refined parameter sets than the minimum: {min_refparams}.")
                 if np.count_nonzero(pfactor < min_pfactor) == 0:
                     print(f"All models had p-factor greater than {min_pfactor}")
                 else:
@@ -152,7 +163,148 @@ class MsCua:
                     print(
                         f"{np.count_nonzero(pfactor < min_pfactor)} models had a p-factor lower than the allowable minimum: {min_pfactor}. Returning array of failed indexes.")
                     return np.where(pfactor < min_pfactor)[0], np.where(refined_param_cnt < min_refparams)[0]
+        elif dbase.format == 'zarr':
+            if not dbase.parameter_samples:
+                raise AttributeError("No parameter samples have been saved to the input database.")
+            if dbase.simulation_results is None:
+                raise AttributeError("No simulation data has been saved to the input database.")
+            dbase.thresholds = objfunc_thresh
+            dbase.thresholds.update({"pfactor_threshold": min_pfactor})
+            dbase.thresholds.update({"min_refined_params_threshold": min_refparams})
+            dbase._ref_par = copy.deepcopy(dbase._par_samples)
+            keys = list(dbase.dims.keys())[0]
+            features = dbase.dims[keys]
+            if isinstance(features, int):
+                print("Evaluating Objective Function Values...")
+                feature_list = []
+                for i in tqdm.tqdm(range(features), desc='features', leave=False):
+                    feature_arr = dbase.simulation_results[:, :, i:i + 1]
+                    observation_arr = np.expand_dims(self.observation_data[:, i], axis=(0, 2))
+                    feature_objfunc = self.setup.objectivefunction(observation_arr, feature_arr)
+                    feature_list.append(feature_objfunc)
+                ob = {k: np.concatenate([f[k] for f in feature_list], axis=1) for k in feature_list[0]}
+            else:
+                raise IndexError("self.parameter_dimension must use int data type.")
+            if not isinstance(ob, dict):
+                raise ValueError(
+                    "The setup class's objective function method did not return a dictionary. A dictionary of objective functions is required.")
+            dbase.save(objective_func=ob)
+            best_sim = {}
+            best_obfn = {}
+            best_params = {}
+            for k, v in ob.items():
+                if obj_func_direction[k] == 'minimize':
+                    br_list = []
+                    bo_list = []
+                    for i in range(features):
+                        feature_arr = dbase.simulation_results[:, :, i:i + 1]
+                        observation_arr = v[:, i:i + 1]
+                        br_list.append(
+                            feature_arr[observation_arr.argmin(axis=0), :, np.arange(observation_arr.shape[1])].T)
+                        bo_list.append(
+                            observation_arr[observation_arr.argmin(axis=0), np.arange(observation_arr.shape[1])])
+                    best_rep = np.concatenate(br_list, axis=1)
+                    best_ob = np.concatenate(bo_list, axis=0)
+                    best_par = {}
+                    for pk, pv in dbase.refined_parameters.items():
+                        best_par.update({pk: pv[v.argmin(axis=0), np.arange(v.shape[1])]})
+                elif obj_func_direction[k] == 'maximize':
+                    br_list = []
+                    bo_list = []
+                    for i in range(features):
+                        feature_arr = dbase.simulation_results[:, :, i:i + 1]
+                        observation_arr = v[:, i:i + 1]
+                        br_list.append(
+                            feature_arr[observation_arr.argmax(axis=0), :, np.arange(observation_arr.shape[1])].T)
+                        bo_list.append(
+                            observation_arr[observation_arr.argmax(axis=0), np.arange(observation_arr.shape[1])])
+                    best_rep = np.concatenate(br_list, axis=1)
+                    best_ob = np.concatenate(bo_list, axis=0)
+                    best_par = {}
+                    for pk, pv in dbase.refined_parameters.items():
+                        best_par.update({pk: pv[v.argmax(axis=0), np.arange(v.shape[1])]})
+                else:
+                    raise ValueError("The objective function threshold direction is not recognized.")
+                best_sim.update({k: best_rep})
+                best_obfn.update({k: best_ob})
+                best_params.update({k: best_par})
+            dbase.best_sim = best_sim
+            dbase.best_params = best_params
+            dbase.best_objfun = best_obfn
+            fil = {}
+            for k, v in ob.items():
+                if k not in list(objfunc_thresh.keys()):
+                    raise ValueError(f"No threshold was provided for objective function {k}.")
+                if obj_func_direction[k] == 'minimize':
+                    threshold_filter = np.where(v > objfunc_thresh[k])
+                elif obj_func_direction[k] == 'maximize':
+                    threshold_filter = np.where(v < objfunc_thresh[k])
+                else:
+                    raise ValueError("The objective function threshold direction is not recognized.")
+                fil[k] = threshold_filter
+                for park in dbase.refined_parameters.keys():
+                    for k, v in fil.items():
+                        dbase._ref_par[park][v] = np.nan
+            param_nans = np.isnan(dbase.refined_parameters[list(dbase.refined_parameters.keys())[0]])
+            refined_param_cnt = np.count_nonzero(~param_nans, axis=0)
+            print(f"Max number of refined parameter sets: {refined_param_cnt.max()}")
+            print(f"Min number of refined parameter sets: {refined_param_cnt.min()}")
+            ref_less_than = np.count_nonzero(refined_param_cnt < min_refparams)
+            ## calculate 95PPU, pfactor, and rfactor here
+            print("Calculating the 95PPU...")
+            obs_sd = np.nanstd(self.observation_data, axis=0)  # np.nanstd from np.std
+            upppu_list = []
+            loppu_list = []
+            pfac_list = []
+            rfac_list = []
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', category=RuntimeWarning)
+                for i in tqdm.tqdm(range(features), desc='features', leave=False):
+                    # feature_arr = rechunk_results[:, :, i:i + 1]
+                    feature_arr = dbase.simulation_results[:, :, i:i + 1]
+                    feature_arr[(np.where(param_nans[:, i])[0]), :, :] = np.nan
+                    ppu95 = np.nanquantile(feature_arr, [0.025, 0.975], axis=0)
+                    up95ppu = ppu95[1, :, 0]
+                    lo95ppu = ppu95[0, :, 0]
+                    pfac_arr = np.where((self.observation_data[:, i] <= up95ppu) & (self.observation_data[:, i] >= lo95ppu),
+                                        1, 0) * 1.0
+                    pfac_arr[np.where(np.isnan(self.observation_data[:, i]))] = np.nan
+                    pfac = np.nansum(pfac_arr) / (~np.isnan(pfac_arr)).sum()
+                    ppu_diff = (up95ppu - lo95ppu).mean()
+                    rfac = ppu_diff / obs_sd[i]
+                    upppu_list.append(up95ppu)
+                    loppu_list.append(lo95ppu)
+                    pfac_list.append(pfac)
+                    rfac_list.append(rfac)
+            dbase.ppu_upper = np.stack(upppu_list, axis=1)
+            dbase.ppu_lower = np.stack(loppu_list, axis=1)
+            dbase.pfactor = np.array(pfac_list)
+            dbase.rfactor = np.array(rfac_list)
+            print(f"Max p-factor = {np.nanmax(dbase.pfactor)}")
+            print(f"Min p-factor = {np.nanmin(dbase.pfactor)}")
+            print(f"Min r-factor = {np.nanmin(dbase.rfactor)}")
+            print(f"Max r-factor = {np.nanmax(dbase.rfactor)}")
 
+            if ref_less_than == 0:
+                print(f"All models retained more refined parameter sets than the minimum: {min_refparams}.")
+                if np.count_nonzero(dbase.pfactor < min_pfactor) == 0:
+                    print(f"All models had p-factor greater than {min_pfactor}")
+                else:
+                    print(
+                        f"{np.count_nonzero(dbase.pfactor < min_pfactor)} models had a p-factor lower than the allowable minimum: {min_pfactor}. Returning array of failed indexes.")
+                    return np.where(dbase.pfactor < min_pfactor)[0]
+            else:
+                print(
+                    f"{ref_less_than} models had fewer than the minimum allowable refined parameter sets: {min_refparams}. Either increase the number of samples or exclude these models.")
+                print(f"Returning array of failed model indexes.")
+                if np.count_nonzero(dbase.pfactor < min_pfactor) == 0:
+                    print(f"All models had p-factor greater than {min_pfactor}")
+                    return np.where(refined_param_cnt < min_refparams)[0]
+                else:
+                    print(
+                        f"{np.count_nonzero(dbase.pfactor < min_pfactor)} models had a p-factor lower than the allowable minimum: {min_pfactor}. Returning array of failed indexes.")
+                    return np.where(dbase.pfactor < min_pfactor)[0], \
+                    np.where(refined_param_cnt < min_refparams)[0]
         else:
             raise NotImplementedError("Other databases not supported")
 
@@ -408,7 +560,7 @@ class SensitivityAnalysis:
         segment = 1 / float(reps)
         rslt['base_sample'] = (('parameters', self.setup.param_dim_names), init_samp_arr)
         rslt['samples'] = (
-        ('parameters', 'repetitions', self.setup.param_dim_names), da.from_array(np.empty(arr_sz), chunks='auto'))
+            ('parameters', 'repetitions', self.setup.param_dim_name), da.from_array(np.empty(arr_sz), chunks='auto'))
         for i, p in enumerate(plist):
             # sample parameter space here
             parmin = p.minbound

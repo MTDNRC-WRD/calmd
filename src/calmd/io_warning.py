@@ -5,7 +5,6 @@ import warnings
 import inspect
 import os
 
-
 def user_warning(msg: str, frame: inspect.getframeinfo, wtype: tuple = UserWarning) -> None:
     """
     Method to standardize the warning output and avoid

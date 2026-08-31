@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="Black">
-    <option name="sdkName" value="mihm" />
+    <option name="sdkName" value="basinclassification_jit" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="C:\Users\CND571\.conda\envs\swim1" project-jdk-type="Python SDK" />
 </project>
